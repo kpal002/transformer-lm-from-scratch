@@ -93,7 +93,7 @@ Four training runs on TinyStories (40M tokens, matched compute):
 
 **Colab (recommended)** — click the badge above. The notebook runs top-to-bottom; each experiment section has a single variable to change (e.g. `ABLATION = "no_rope"`).
 
-**Local:**
+**Terminal:**
 
 ```bash
 git clone https://github.com/kpal002/transformer-lm-from-scratch
@@ -101,13 +101,34 @@ cd transformer-lm-from-scratch
 pip install -e .
 ```
 
-Train the BPE tokenizer on TinyStories:
-
 ```bash
-python -m transformer_lm.scripts.train_tokenizer --vocab-size 10000 --output-dir ./ckpts
+# Step 1: train BPE tokenizer on TinyStories (~5 min)
+python -m transformer_lm.scripts.train_tokenizer --vocab-size 10000 --output-dir ./run
+
+# Step 2: train the model (downloads data, tokenizes, trains — ~30 min on T4)
+python -m transformer_lm.scripts.train --out-dir ./run
+
+# Step 3: generate text
+python -m transformer_lm.scripts.generate \
+    --checkpoint ./run/ckpt_final.pt \
+    --vocab ./run/bpe.vocab --merges ./run/bpe.merges \
+    --prompt "Once upon a time"
 ```
 
-Then open the notebook and run Part 2 (Training). Set `use_wandb = False` in `TinyStoriesConfig` to skip W&B.
+Common overrides:
+
+```bash
+# Larger model
+python -m transformer_lm.scripts.train \
+    --d-model 768 --num-layers 6 --num-heads 16 \
+    --num-steps 10000 --out-dir ./run-large
+
+# Resume from checkpoint
+python -m transformer_lm.scripts.train --out-dir ./run --resume ./run/ckpt_005000.pt
+
+# Multiple samples
+python -m transformer_lm.scripts.generate ... --num-samples 5 --temperature 1.0
+```
 
 ---
 
@@ -125,8 +146,18 @@ transformer_lm/
 │   └── tokenizer.py       # BPETokenizer encode/decode
 ├── data/
 │   └── tinystories.py     # TinyStories downloader
+├── training/
+│   ├── config.py          # TrainingConfig dataclass
+│   ├── loss.py            # cross_entropy_loss (from scratch)
+│   ├── optim.py           # AdamW + gradient clipping (from scratch)
+│   ├── schedule.py        # cosine LR schedule with warmup
+│   ├── data.py            # get_batch, tokenize_and_save
+│   ├── checkpoint.py      # save/load checkpoint
+│   └── trainer.py         # train(), generate()
 └── scripts/
-    └── train_tokenizer.py # CLI: train + verify tokenizer
+    ├── train_tokenizer.py # CLI: train BPE tokenizer
+    ├── train.py           # CLI: train model end-to-end
+    └── generate.py        # CLI: generate from checkpoint
 ```
 
 ---
