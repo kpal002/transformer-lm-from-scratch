@@ -75,17 +75,49 @@ d_ff           = 1344     # ceil(8/3 × 512 / 64) × 64  — SwiGLU param-equiva
 
 ---
 
-## Ablations
+## Ablations & training dynamics
 
-Four training runs on TinyStories (40M tokens, matched compute):
+### Learning rate sweep
 
-| Ablation | What changes | Expected effect |
+![LR sweep — val/ppl and val/loss](assets/lr_sweep.png)
+
+`lr=1e-3` (red) beats both `3e-4` and `1e-2` across all steps. At `lr=1e-2` the model still converges but lags significantly — the cosine schedule with warmup is sensitive to the peak LR.
+
+### Batch size sweep
+
+![Batch size sweep — val/ppl](assets/batch_size_sweep.png)
+
+`bs=64` (green) converges fastest in steps but uses more memory; `bs=32` (purple) is the practical sweet spot. `bs=8` (red) takes 19k steps to reach parity — gradient noise from tiny batches requires far more updates.
+
+### Model size sweep
+
+![Model size sweep — val/ppl](assets/model_size_sweep.png)
+
+`size_large` and `size_medium` converge to nearly identical val perplexity (~6.5) given the same token budget, while `size_tiny` plateaus ~10. This is the isoFLOP regime in action: at this compute budget, medium is already capacity-sufficient.
+
+### SwiGLU vs SiLU
+
+![SwiGLU vs SiLU — val/ppl](assets/ablation_swiglu_vs_silu.png)
+
+`normal_swiglu` (purple) consistently outperforms `ablation_silu` (green) by ~0.5 ppl across the full run. SwiGLU's gating mechanism adds ~33% more FFN parameters for the same d_model, which pays off.
+
+### Normalization ablation
+
+![Norm ablation — train/ppl](assets/no_norm_vs_reduced_lr.png)
+
+Without RMSNorm at the default `lr=1e-3`, training explodes (orange, ppl ~9000). Dropping to `lr=1e-4` rescues convergence (blue) but the model learns an order of magnitude slower. Pre-norm RMSNorm is load-bearing.
+
+---
+
+**Summary table** (matched compute, TinyStories):
+
+| Ablation | What changes | Final val ppl |
 |---|---|---|
-| `baseline` | RoPE · RMSNorm · SwiGLU · pre-norm | — |
-| `no_rmsnorm` | Remove normalization | Diverges or needs lower lr |
-| `no_rope` | Learned position embeddings | Degrades on long sequences |
-| `no_swiglu` | Replace with SiLU FFN | Slightly worse loss |
-| `post_norm` | Move norm after residual | Less stable at high lr |
+| `baseline` | RoPE · RMSNorm · SwiGLU · pre-norm | ~7.0 |
+| `no_swiglu` | Replace SwiGLU with SiLU FFN | ~7.5 |
+| `no_rmsnorm` | Remove normalization (lr=1e-4) | diverges at default lr |
+| `no_rope` | Learned position embeddings | degrades on long ctx |
+| `post_norm` | Norm after residual | less stable at high lr |
 
 ---
 
