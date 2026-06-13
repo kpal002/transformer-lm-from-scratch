@@ -98,14 +98,23 @@ def train(
 
         if step % cfg.save_every == 0 and step > 0:
             path = os.path.join(cfg.out_dir, f"ckpt_{step:06d}.pt")
-            save_checkpoint(model, optimizer, step, path)
+            save_checkpoint(model, optimizer, step, path, _meta(cfg))
             print(f"  [ckpt] saved → {path}")
 
-    save_checkpoint(model, optimizer, cfg.num_steps, os.path.join(cfg.out_dir, "ckpt_final.pt"))
+    save_checkpoint(model, optimizer, cfg.num_steps, os.path.join(cfg.out_dir, "ckpt_final.pt"), _meta(cfg))
     print("Training complete.")
     if run is not None:
         import wandb
         wandb.finish()
+
+
+def _meta(cfg: TrainingConfig) -> dict:
+    return {
+        "context_length": cfg.context_length,
+        "num_heads": cfg.num_heads,
+        "norm_type": cfg.norm_type,
+        "use_rope": cfg.use_rope,
+    }
 
 
 @torch.no_grad()

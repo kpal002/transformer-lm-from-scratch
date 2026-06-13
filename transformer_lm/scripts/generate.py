@@ -49,16 +49,27 @@ def main() -> None:
 
     ckpt = torch.load(args.checkpoint, map_location=device)
     model_state = ckpt["model"]
+    meta = ckpt.get("meta", {})
 
     # Infer model shape from checkpoint weights
     embed = model_state["token_embedding.weight"]
     vocab_size, d_model = embed.shape
     num_layers = sum(1 for k in model_state if k.endswith(".attn.W_Q.weight"))
-    num_heads_times_dk = model_state[next(k for k in model_state if "W_Q" in k)].shape[0]
-    # num_heads from the RoPE buffer shape: (max_seq_len, d_k) where d_k = d_model // num_heads
-    rope_cos = model_state[next(k for k in model_state if "cos_cache" in k)]
-    context_length, dk = rope_cos.shape
-    num_heads = d_model // dk
+
+    # Prefer stored metadata; fall back to inferring from weight shapes
+    norm_type = meta.get("norm_type", "pre")
+    use_rope = meta.get("use_rope", True)
+
+    if "context_length" in meta and "num_heads" in meta:
+        context_length = meta["context_length"]
+        num_heads = meta["num_heads"]
+    elif use_rope:
+        rope_cos = model_state[next(k for k in model_state if "cos_cache" in k)]
+        context_length, dk = rope_cos.shape
+        num_heads = d_model // dk
+    else:
+        context_length = model_state["pos_embedding.weight"].shape[0]
+        num_heads = d_model // 64  # fallback: assume d_k=64
 
     model = TransformerLM(
         vocab_size=vocab_size,
@@ -66,6 +77,8 @@ def main() -> None:
         d_model=d_model,
         num_layers=num_layers,
         num_heads=num_heads,
+        norm_type=norm_type,
+        use_rope=use_rope,
     ).to(device)
     model.load_state_dict(model_state)
 

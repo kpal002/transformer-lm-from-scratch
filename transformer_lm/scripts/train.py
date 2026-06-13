@@ -50,6 +50,10 @@ def parse_args() -> argparse.Namespace:
     g.add_argument("--num-heads",      type=int,   default=16)
     g.add_argument("--d-ff",           type=int,   default=None, help="FFN width (default: ceil(8/3 × d-model / 64) × 64)")
     g.add_argument("--theta",          type=float, default=10_000.0)
+    g.add_argument("--norm-type",      type=str,   default="pre", choices=["pre", "post", "none"],
+                   help="Normalization placement: pre-norm (default), post-norm, or none")
+    g.add_argument("--no-rope",        dest="use_rope", action="store_false",
+                   help="Replace RoPE with learned positional embeddings")
 
     # ── Training ───────────────────────────────────────────────────────────────
     g = p.add_argument_group("training")
@@ -130,6 +134,8 @@ def main() -> None:
         num_heads=args.num_heads,
         d_ff=args.d_ff,
         theta=args.theta,
+        norm_type=args.norm_type,
+        use_rope=args.use_rope,
         alpha_max=args.alpha_max,
         alpha_min=args.alpha_min,
         weight_decay=args.weight_decay,
@@ -156,6 +162,8 @@ def main() -> None:
         num_heads=cfg.num_heads,
         d_ff=cfg.d_ff,
         theta=cfg.theta,
+        norm_type=cfg.norm_type,
+        use_rope=cfg.use_rope,
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())

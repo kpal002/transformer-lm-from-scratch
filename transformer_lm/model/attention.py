@@ -92,6 +92,7 @@ class CausalMultiHeadSelfAttention(nn.Module):
         num_heads: int,
         max_seq_len: int,
         theta: float = 10000.0,
+        use_rope: bool = True,
         device=None,
         dtype=None,
     ):
@@ -100,12 +101,14 @@ class CausalMultiHeadSelfAttention(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_k = d_model // num_heads
+        self.use_rope = use_rope
 
         self.W_Q = Linear(d_model, d_model, device=device, dtype=dtype)
         self.W_K = Linear(d_model, d_model, device=device, dtype=dtype)
         self.W_V = Linear(d_model, d_model, device=device, dtype=dtype)
         self.W_O = Linear(d_model, d_model, device=device, dtype=dtype)
-        self.rope = RotaryPositionalEmbedding(theta, self.d_k, max_seq_len, device=device)
+        if use_rope:
+            self.rope = RotaryPositionalEmbedding(theta, self.d_k, max_seq_len, device=device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """(batch, seq, d_model) -> (batch, seq, d_model)"""
@@ -118,9 +121,10 @@ class CausalMultiHeadSelfAttention(nn.Module):
         K = split_heads(self.W_K(x))
         V = split_heads(self.W_V(x))
 
-        positions = torch.arange(seq_len, device=x.device)
-        Q = self.rope(Q, positions)
-        K = self.rope(K, positions)
+        if self.use_rope:
+            positions = torch.arange(seq_len, device=x.device)
+            Q = self.rope(Q, positions)
+            K = self.rope(K, positions)
 
         causal_mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device))
         out = scaled_dot_product_attention(Q, K, V, mask=causal_mask)
