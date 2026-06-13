@@ -133,8 +133,10 @@ cd transformer-lm-from-scratch
 pip install -e .
 ```
 
+**Option A — train from raw text (downloads TinyStories automatically):**
+
 ```bash
-# Step 1: train BPE tokenizer on TinyStories (~5 min)
+# Step 1: train BPE tokenizer (~5 min)
 python -m transformer_lm.scripts.train_tokenizer --vocab-size 10000 --output-dir ./run
 
 # Step 2: train the model (downloads data, tokenizes, trains — ~30 min on T4)
@@ -145,6 +147,17 @@ python -m transformer_lm.scripts.generate \
     --checkpoint ./run/ckpt_final.pt \
     --vocab ./run/bpe.vocab --merges ./run/bpe.merges \
     --prompt "Once upon a time"
+```
+
+**Option B — bring your own pre-tokenized data (no tokenizer files needed):**
+
+```bash
+# Pass pre-tokenized .npy files and matching vocab size directly
+python -m transformer_lm.scripts.train \
+    --train-tokens ./owt_train_32k.npy \
+    --val-tokens   ./owt_val_32k.npy \
+    --vocab-size   32000 \
+    --out-dir      ./run
 ```
 
 Common overrides:
