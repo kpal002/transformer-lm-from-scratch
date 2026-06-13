@@ -101,7 +101,25 @@ d_ff           = 1344     # ceil(8/3 × 512 / 64) × 64  — SwiGLU param-equiva
 
 `normal_swiglu` (purple) consistently outperforms `ablation_silu` (green) by ~0.5 ppl across the full run. SwiGLU's gating mechanism adds ~33% more FFN parameters for the same d_model, which pays off.
 
-### Normalization ablation
+### RoPE vs learned positional embeddings
+
+![RoPE ablation — val/ppl](assets/rope_ablation_val_ppl.png)
+
+`ablation_with_rope` (green) converges to ~20 lower val/ppl than `ablation_no_rope` (purple) by step 4.4k — a large gap that keeps widening. Without RoPE, the model uses a learned absolute position embedding table instead. The attention mechanism loses its sense of relative distance between tokens, so it can't reliably tie subjects to verbs or pronouns to referents across the context window.
+
+The gap in numbers shows up dramatically in generated text — without RoPE the model drifts off-topic within 20 tokens and never recovers.
+
+### Pre-norm vs post-norm
+
+![Pre vs post norm — val/ppl](assets/norm_ablation_val_ppl.png)
+
+Pre-norm (blue) reaches lower val/ppl faster and holds a consistent ~5–10 ppl lead over post-norm (red) throughout training.
+
+![Pre vs post norm — grad norm](assets/norm_ablation_grad_norm.png)
+
+The gradient norm plot explains why: post-norm (red) has larger, spikier gradients throughout training — the norm sits *after* the residual, so raw un-normalised activations flow directly into the backward pass. Pre-norm keeps gradients tighter and more consistent (blue), which translates directly into more stable and efficient learning.
+
+### No-norm ablation
 
 ![Norm ablation — train/ppl](assets/no_norm_vs_reduced_lr.png)
 
@@ -109,15 +127,15 @@ Without RMSNorm at the default `lr=1e-3`, training explodes (orange, ppl ~9000).
 
 ---
 
-**Summary table** (matched compute, TinyStories):
+**Summary table** (matched compute, OpenWebText 32k):
 
 | Ablation | What changes | Final val ppl |
 |---|---|---|
-| `baseline` | RoPE · RMSNorm · SwiGLU · pre-norm | ~7.0 |
-| `no_swiglu` | Replace SwiGLU with SiLU FFN | ~7.5 |
+| `baseline` (pre-norm + RoPE) | RoPE · RMSNorm · SwiGLU · pre-norm | ~97 |
+| `post_norm` | Norm after residual instead of before | ~105 |
+| `no_rope` | Learned absolute position embeddings | ~120 |
+| `no_swiglu` | Replace SwiGLU with SiLU FFN | slightly worse |
 | `no_rmsnorm` | Remove normalization (lr=1e-4) | diverges at default lr |
-| `no_rope` | Learned position embeddings | degrades on long ctx |
-| `post_norm` | Norm after residual | less stable at high lr |
 
 ---
 
