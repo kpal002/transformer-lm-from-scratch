@@ -103,7 +103,7 @@ d_ff           = 1344     # ceil(8/3 × 512 / 64) × 64  — SwiGLU param-equiva
 
 ### RoPE vs learned positional embeddings
 
-![RoPE ablation — val/ppl](assets/rope_ablation_val_ppl.png)
+![RoPE ablation — val/ppl](assets/rope_vs_no_rope.png)
 
 `ablation_with_rope` (green) converges to ~20 lower val/ppl than `ablation_no_rope` (purple) by step 4.4k — a large gap that keeps widening. Without RoPE, the model uses a learned absolute position embedding table instead. The attention mechanism loses its sense of relative distance between tokens, so it can't reliably tie subjects to verbs or pronouns to referents across the context window.
 
@@ -111,11 +111,11 @@ The gap in numbers shows up dramatically in generated text — without RoPE the 
 
 ### Pre-norm vs post-norm
 
-![Pre vs post norm — val/ppl](assets/norm_ablation_val_ppl.png)
+![Pre vs post norm — val/ppl](assets/val_ppl_pre_vs_post.png)
 
 Pre-norm (blue) reaches lower val/ppl faster and holds a consistent ~5–10 ppl lead over post-norm (red) throughout training.
 
-![Pre vs post norm — grad norm](assets/norm_ablation_grad_norm.png)
+![Pre vs post norm — grad norm](assets/grad_pre_vs_post.png)
 
 The gradient norm plot explains why: post-norm (red) has larger, spikier gradients throughout training — the norm sits *after* the residual, so raw un-normalised activations flow directly into the backward pass. Pre-norm keeps gradients tighter and more consistent (blue), which translates directly into more stable and efficient learning.
 
