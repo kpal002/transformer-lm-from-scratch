@@ -90,25 +90,26 @@ def main() -> None:
     )
     print(f"Device: {device}")
 
-    # ── Resolve tokenizer paths ────────────────────────────────────────────────
-    vocab_path  = args.vocab  or args.out_dir / "bpe.vocab"
-    merges_path = args.merges or args.out_dir / "bpe.merges"
-
-    if not vocab_path.exists() or not merges_path.exists():
-        raise FileNotFoundError(
-            f"Tokenizer files not found: {vocab_path}, {merges_path}\n"
-            f"Run first:  python -m transformer_lm.scripts.train_tokenizer "
-            f"--vocab-size {args.vocab_size} --output-dir {args.out_dir}"
-        )
-
-    tokenizer = BPETokenizer.from_files(vocab_path, merges_path, special_tokens=SPECIAL_TOKENS)
-    print(f"Tokenizer loaded: vocab_size={tokenizer.vocab_size:,}")
-
-    # ── Prepare token arrays (download + tokenize if needed) ──────────────────
+    # ── Prepare token arrays ───────────────────────────────────────────────────
     train_npy = args.train_tokens or args.out_dir / "train_tokens.npy"
     val_npy   = args.val_tokens   or args.out_dir / "val_tokens.npy"
 
-    if not train_npy.exists() or not val_npy.exists():
+    if train_npy.exists() and val_npy.exists():
+        print(f"Using pre-tokenized files: {train_npy}, {val_npy}")
+    else:
+        # Tokenize from scratch — requires tokenizer files
+        vocab_path  = args.vocab  or args.out_dir / "bpe.vocab"
+        merges_path = args.merges or args.out_dir / "bpe.merges"
+        if not vocab_path.exists() or not merges_path.exists():
+            raise FileNotFoundError(
+                f"Tokenizer files not found: {vocab_path}, {merges_path}\n"
+                f"Either run:  python -m transformer_lm.scripts.train_tokenizer "
+                f"--vocab-size {args.vocab_size} --output-dir {args.out_dir}\n"
+                f"Or pass pre-tokenized files: --train-tokens <path> --val-tokens <path>"
+            )
+        tokenizer = BPETokenizer.from_files(vocab_path, merges_path, special_tokens=SPECIAL_TOKENS)
+        print(f"Tokenizer loaded: vocab_size={tokenizer.vocab_size:,}")
+
         corpus_path = args.out_dir / "tinystories_train.txt"
         download_tinystories(output_path=corpus_path)
 
