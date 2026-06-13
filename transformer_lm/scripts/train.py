@@ -91,8 +91,8 @@ def main() -> None:
     print(f"Device: {device}")
 
     # ── Prepare token arrays ───────────────────────────────────────────────────
-    train_npy = args.train_tokens or args.out_dir / "train_tokens.npy"
-    val_npy   = args.val_tokens   or args.out_dir / "val_tokens.npy"
+    train_npy = (args.train_tokens.expanduser() if args.train_tokens else args.out_dir / "train_tokens.npy")
+    val_npy   = (args.val_tokens.expanduser()   if args.val_tokens   else args.out_dir / "val_tokens.npy")
 
     if train_npy.exists() and val_npy.exists():
         print(f"Using pre-tokenized files: {train_npy}, {val_npy}")
