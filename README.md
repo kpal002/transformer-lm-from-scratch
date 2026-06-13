@@ -198,7 +198,6 @@ transformer_lm/
 
 - [ ] KV cache for fast autoregressive generation
 - [ ] SFT + GRPO — reasoning model training on GSM8K
-- [ ] More compute budgets to close in on the Chinchilla crossover point
 
 ---
 
