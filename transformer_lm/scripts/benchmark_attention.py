@@ -144,7 +144,7 @@ def bench_throughput(
     batch: int = 4,
     d_model: int = 512,
     num_layers: int = 4,
-    num_heads: int = 16,
+    num_heads: int = 8,   # d_k = d_model / num_heads = 64 — matches bench_kernel default
     num_steps: int = 10,
 ) -> dict:
     """Compare tokens/sec for naive vs flash at the full model level."""

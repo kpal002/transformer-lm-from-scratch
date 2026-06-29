@@ -274,11 +274,12 @@ class CausalMultiHeadSelfAttention(nn.Module):
 
         if self.use_flash:
             # Flash Attention: O(N) memory, fused kernel — requires float16/bfloat16
-            # Cast to half precision for the Triton kernel, then cast output back
+            # Must be contiguous: split_heads() uses transpose() which produces a
+            # non-contiguous view; our Triton kernel assumes contiguous strides.
             orig_dtype = Q.dtype
-            Q_h = Q.to(torch.bfloat16)
-            K_h = K.to(torch.bfloat16)
-            V_h = V.to(torch.bfloat16)
+            Q_h = Q.contiguous().to(torch.bfloat16)
+            K_h = K.contiguous().to(torch.bfloat16)
+            V_h = V.contiguous().to(torch.bfloat16)
             out = flash_attention(Q_h, K_h, V_h, causal=True).to(orig_dtype)
         else:
             # Naive attention: materialises the full (seq, seq) score matrix in HBM

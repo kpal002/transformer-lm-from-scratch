@@ -347,6 +347,10 @@ class FlashAttentionFunction(torch.autograd.Function):
         assert d_k in (16, 32, 64, 128), f"d_k={d_k} not supported; use 16/32/64/128"
         assert q.dtype in (torch.float16, torch.bfloat16)
         assert q.is_cuda
+        # Triton kernel assumes contiguous layout — call .contiguous() before this function
+        assert q.is_contiguous(), "q must be contiguous; call q.contiguous() before flash_attention"
+        assert k.is_contiguous(), "k must be contiguous; call k.contiguous() before flash_attention"
+        assert v.is_contiguous(), "v must be contiguous; call v.contiguous() before flash_attention"
 
         out = torch.empty_like(q)
         # L stores logsumexp per (batch, head, query_pos) for backward recomputation
