@@ -130,15 +130,30 @@ Without RMSNorm at the default `lr=1e-3`, training explodes (orange, ppl ~9000).
 
 ![Flash Attention kernel latency](assets/benchmark_time.png)
 
-Naive attention allocates an N×N score matrix in GPU HBM — memory grows as O(N²). Flash Attention tiles Q, K, V into SRAM blocks and fuses the softmax with the matrix multiply, keeping the working set in fast on-chip memory. The result is O(N) peak memory and a latency crossover that moves from parity to 2–4× faster as sequence length grows past ~1k tokens.
+Naive attention allocates an N×N score matrix in GPU HBM — memory grows as O(N²). Flash Attention tiles Q, K, V into SRAM blocks and fuses the softmax with the matrix multiply, keeping the working set in fast on-chip memory. Measured on A100 (40 GB SXM4):
+
+| seq_len | Naive (ms) | Flash (ms) | Speedup |
+|---------|-----------|-----------|---------|
+| 128 | 0.29 | 0.13 | 2.2× |
+| 512 | 0.86 | 0.16 | **5.3×** |
+| 1024 | 2.70 | 0.19 | **14×** |
+| 2048 | 9.28 | 0.30 | **31×** |
+| 4096 | 34.6 | 0.75 | **46×** |
 
 ![Flash Attention peak memory](assets/benchmark_memory.png)
 
-Memory savings are dramatic at long context: at seq=4096 the naive kernel uses ~32× more GPU memory than Flash, making context lengths that would OOM under naive attention easily trainable.
+The O(N²) vs O(N) memory scaling is even more striking. At seq=4096 the naive kernel consumes 8.2 GiB for the score matrix alone; Flash Attention uses 89 MiB — a **94× reduction**:
+
+| seq_len | Naive (MiB) | Flash (MiB) | Ratio |
+|---------|------------|------------|-------|
+| 256 | 49 | 12 | 4× |
+| 1024 | 557 | 25 | 22× |
+| 2048 | 2,132 | 44 | 48× |
+| 4096 | 8,361 | 89 | **94×** |
 
 ![Flash Attention training throughput](assets/benchmark_throughput.png)
 
-Forward-pass tokens/sec with a 4-layer, 512-dim model on A100. Flash attention delivers higher throughput at every sequence length ≥ 512, with the gap widening at 2048+ tokens. Since backward scales proportionally (~2× forward cost), the training throughput ratio is the same.
+Forward-pass tokens/sec with a 4-layer, 512-dim model on A100. Flash attention is already faster at seq=512 and pulls **2.9× ahead at seq=2048**. Since backward scales proportionally (~2× forward cost), the training throughput ratio holds.
 
 Enable Flash Attention with a single flag:
 
