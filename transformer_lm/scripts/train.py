@@ -29,6 +29,18 @@ from transformer_lm.training import AdamW, TrainingConfig, tokenize_and_save, tr
 
 SPECIAL_TOKENS = ["<|endoftext|>"]
 
+# Named architecture presets (d_k = d_model / num_heads = 64 in all cases)
+MODEL_PRESETS: dict[str, dict] = {
+    "small":  dict(d_model=768,  d_ff=3072,  num_layers=12, num_heads=12),
+    "medium": dict(d_model=1024, d_ff=4096,  num_layers=24, num_heads=16),
+    "large":  dict(d_model=1280, d_ff=5120,  num_layers=36, num_heads=20),
+    "xl":     dict(d_model=2560, d_ff=10240, num_layers=32, num_heads=32),
+    "10b":    dict(d_model=4608, d_ff=12288, num_layers=50, num_heads=36),
+}
+
+# Fallback defaults when no preset and no explicit flag
+_ARCH_DEFAULTS = dict(d_model=512, num_layers=4, num_heads=16)
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train a TransformerLM on TinyStories")
@@ -43,12 +55,20 @@ def parse_args() -> argparse.Namespace:
 
     # ── Model ──────────────────────────────────────────────────────────────────
     g = p.add_argument_group("model")
+    g.add_argument("--model-size", type=str, default=None,
+                   choices=list(MODEL_PRESETS),
+                   help="Named architecture preset (small/medium/large/xl/10b). "
+                        "Individual flags override the preset.")
     g.add_argument("--vocab-size",     type=int,   default=10_000)
     g.add_argument("--context-length", type=int,   default=256)
-    g.add_argument("--d-model",        type=int,   default=512)
-    g.add_argument("--num-layers",     type=int,   default=4)
-    g.add_argument("--num-heads",      type=int,   default=16)
-    g.add_argument("--d-ff",           type=int,   default=None, help="FFN width (default: ceil(8/3 × d-model / 64) × 64)")
+    g.add_argument("--d-model",        type=int,   default=None,
+                   help="Residual stream width (default 512, overrides --model-size)")
+    g.add_argument("--num-layers",     type=int,   default=None,
+                   help="Number of transformer blocks (default 4, overrides --model-size)")
+    g.add_argument("--num-heads",      type=int,   default=None,
+                   help="Attention heads — d_model must be divisible (default 16, overrides --model-size)")
+    g.add_argument("--d-ff",           type=int,   default=None,
+                   help="FFN width (default: ceil(8/3 × d-model / 64) × 64, overrides --model-size)")
     g.add_argument("--theta",          type=float, default=10_000.0)
     g.add_argument("--norm-type",      type=str,   default="pre", choices=["pre", "post", "none"],
                    help="Normalization placement: pre-norm (default), post-norm, or none")
@@ -81,9 +101,32 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _resolve_arch(args: argparse.Namespace) -> dict:
+    """Merge preset → explicit flags → fallback defaults into final arch params."""
+    arch = dict(**_ARCH_DEFAULTS)
+    if args.model_size:
+        arch.update(MODEL_PRESETS[args.model_size])
+    # Explicit flags always win over preset
+    if args.d_model    is not None: arch["d_model"]    = args.d_model
+    if args.num_layers is not None: arch["num_layers"]  = args.num_layers
+    if args.num_heads  is not None: arch["num_heads"]   = args.num_heads
+    if args.d_ff       is not None: arch["d_ff"]        = args.d_ff
+    if arch["d_model"] % arch["num_heads"] != 0:
+        raise ValueError(
+            f"d_model={arch['d_model']} must be divisible by num_heads={arch['num_heads']}"
+        )
+    return arch
+
+
 def main() -> None:
     args = parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    arch = _resolve_arch(args)
+    if args.model_size:
+        print(f"Model preset: {args.model_size} — "
+              f"d_model={arch['d_model']}, num_layers={arch['num_layers']}, "
+              f"num_heads={arch['num_heads']}, d_ff={arch.get('d_ff', 'auto')}")
 
     device = (
         "cuda" if torch.cuda.is_available()
@@ -132,10 +175,10 @@ def main() -> None:
     cfg = TrainingConfig(
         vocab_size=args.vocab_size,
         context_length=args.context_length,
-        d_model=args.d_model,
-        num_layers=args.num_layers,
-        num_heads=args.num_heads,
-        d_ff=args.d_ff,
+        d_model=arch["d_model"],
+        num_layers=arch["num_layers"],
+        num_heads=arch["num_heads"],
+        d_ff=arch.get("d_ff"),
         theta=args.theta,
         norm_type=args.norm_type,
         use_rope=args.use_rope,
