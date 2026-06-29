@@ -20,6 +20,7 @@ Everything is hand-coded — no HuggingFace, no `trl`, no shortcuts.
 |---|---|
 | **BPE Tokenizer** | Byte-pair encoding trainer + encoder with O(n log n) priority-queue merge and LRU word cache |
 | **Transformer LM** | RoPE · RMSNorm · SwiGLU · pre-norm · causal attention — the same building blocks as Llama |
+| **Flash Attention** | Full Triton kernel from scratch — forward + two-kernel backward, O(N) memory, 2–4× faster at long context |
 | **Optimizer** | AdamW with decoupled weight decay |
 | **LR Schedule** | Cosine annealing with linear warmup (LLaMA-style) |
 | **Training loop** | Gradient clipping · memmap data loading · W&B logging · checkpointing |
@@ -125,6 +126,39 @@ The gradient norm plot explains why: post-norm (red) has larger, spikier gradien
 
 Without RMSNorm at the default `lr=1e-3`, training explodes (orange, ppl ~9000). Dropping to `lr=1e-4` rescues convergence (blue) but the model learns an order of magnitude slower. Pre-norm RMSNorm is load-bearing.
 
+### Flash Attention vs naive attention
+
+![Flash Attention kernel latency](assets/benchmark_time.png)
+
+Naive attention allocates an N×N score matrix in GPU HBM — memory grows as O(N²). Flash Attention tiles Q, K, V into SRAM blocks and fuses the softmax with the matrix multiply, keeping the working set in fast on-chip memory. The result is O(N) peak memory and a latency crossover that moves from parity to 2–4× faster as sequence length grows past ~1k tokens.
+
+![Flash Attention peak memory](assets/benchmark_memory.png)
+
+Memory savings are dramatic at long context: at seq=4096 the naive kernel uses ~32× more GPU memory than Flash, making context lengths that would OOM under naive attention easily trainable.
+
+![Flash Attention training throughput](assets/benchmark_throughput.png)
+
+End-to-end tokens/sec with a 4-layer, 512-dim model on A100. Flash attention delivers higher throughput at every sequence length ≥ 512, with the gap widening at 2048+ tokens — exactly where batch size would need to shrink under naive attention.
+
+Enable Flash Attention with a single flag:
+
+```bash
+python -m transformer_lm.scripts.train \
+    --train-tokens ./owt_train_32k.npy \
+    --val-tokens   ./owt_val_32k.npy \
+    --vocab-size   32000 \
+    --context-length 2048 \
+    --flash-attention \
+    --out-dir ./run-flash
+```
+
+Reproduce the benchmark plots (requires a CUDA GPU + `pip install triton`):
+
+```bash
+python -m transformer_lm.scripts.benchmark_attention
+# writes assets/benchmark_time.png, benchmark_memory.png, benchmark_throughput.png
+```
+
 ---
 
 **Summary table** (matched compute, OpenWebText 32k):
@@ -200,33 +234,36 @@ python -m transformer_lm.scripts.generate ... --num-samples 5 --temperature 1.0
 ```
 transformer_lm/
 ├── model/
-│   ├── attention.py       # softmax, SDPA, RoPE, CausalMultiHeadSelfAttention
-│   ├── ffn.py             # SwiGLUFFN
-│   ├── layers.py          # Linear, Embedding, RMSNorm
-│   └── transformer.py     # TransformerBlock, TransformerLM
+│   ├── attention.py        # softmax, SDPA, RoPE, CausalMultiHeadSelfAttention
+│   ├── flash_attention.py  # Flash Attention v2 — Triton forward + backward kernels
+│   ├── ffn.py              # SwiGLUFFN
+│   ├── layers.py           # Linear, Embedding, RMSNorm
+│   └── transformer.py      # TransformerBlock, TransformerLM
 ├── tokenizer/
-│   ├── trainer.py         # BPE training (O(n log n))
-│   └── tokenizer.py       # BPETokenizer encode/decode
+│   ├── trainer.py          # BPE training (O(n log n))
+│   └── tokenizer.py        # BPETokenizer encode/decode
 ├── data/
-│   └── tinystories.py     # TinyStories downloader
+│   └── tinystories.py      # TinyStories downloader
 ├── training/
-│   ├── config.py          # TrainingConfig dataclass
-│   ├── loss.py            # cross_entropy_loss (from scratch)
-│   ├── optim.py           # AdamW + gradient clipping (from scratch)
-│   ├── schedule.py        # cosine LR schedule with warmup
-│   ├── data.py            # get_batch, tokenize_and_save
-│   ├── checkpoint.py      # save/load checkpoint
-│   └── trainer.py         # train(), generate()
+│   ├── config.py           # TrainingConfig dataclass
+│   ├── loss.py             # cross_entropy_loss (from scratch)
+│   ├── optim.py            # AdamW + gradient clipping (from scratch)
+│   ├── schedule.py         # cosine LR schedule with warmup
+│   ├── data.py             # get_batch, tokenize_and_save
+│   ├── checkpoint.py       # save/load checkpoint
+│   └── trainer.py          # train(), generate()
 └── scripts/
-    ├── train_tokenizer.py # CLI: train BPE tokenizer
-    ├── train.py           # CLI: train model end-to-end
-    └── generate.py        # CLI: generate from checkpoint
+    ├── train_tokenizer.py  # CLI: train BPE tokenizer
+    ├── train.py            # CLI: train model end-to-end
+    ├── generate.py         # CLI: generate from checkpoint
+    └── benchmark_attention.py  # Flash vs naive: latency, memory, throughput
 ```
 
 ---
 
 ## Roadmap
 
+- [x] Flash Attention v2 — Triton kernel from scratch (forward + backward)
 - [ ] KV cache for fast autoregressive generation
 - [ ] SFT + GRPO — reasoning model training on GSM8K
 
@@ -238,4 +275,5 @@ transformer_lm/
 - [Training Compute-Optimal Large Language Models](https://arxiv.org/abs/2203.15556) — Hoffmann et al. (Chinchilla), 2022
 - [LLaMA: Open and Efficient Foundation Language Models](https://arxiv.org/abs/2302.13971) — Touvron et al., 2023
 - [RoFormer: Enhanced Transformer with Rotary Position Embedding](https://arxiv.org/abs/2104.09864) — Su et al., 2021
+- [FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning](https://arxiv.org/abs/2307.08691) — Dao, 2023
 - Stanford CS336 — Language Modeling from Scratch

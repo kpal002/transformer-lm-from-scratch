@@ -10,6 +10,7 @@ import torch.nn as nn
 from typing import Optional
 
 from transformer_lm.model.layers import Linear
+from transformer_lm.model.flash_attention import flash_attention, flash_attention_available
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +210,7 @@ class CausalMultiHeadSelfAttention(nn.Module):
         max_seq_len: int,
         theta: float = 10000.0,
         use_rope: bool = True,
+        use_flash: bool = False,
         device=None,
         dtype=None,
     ):
@@ -222,6 +224,8 @@ class CausalMultiHeadSelfAttention(nn.Module):
             use_rope:    Whether to apply RoPE to Q and K.  Set False for the
                          no-rope ablation (learned positional embeddings are used
                          at the TransformerLM level instead).
+            use_flash:   Use Flash Attention Triton kernel instead of naive SDPA.
+                         Requires CUDA + Triton.  Falls back to naive if unavailable.
         """
         super().__init__()
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
@@ -229,6 +233,8 @@ class CausalMultiHeadSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.d_k = d_model // num_heads  # per-head dimension
         self.use_rope = use_rope
+        # Use flash attention only if explicitly requested and hardware supports it
+        self.use_flash = use_flash and flash_attention_available()
 
         # Packed QKV projections and output projection — all bias-free
         self.W_Q = Linear(d_model, d_model, device=device, dtype=dtype)
@@ -266,11 +272,18 @@ class CausalMultiHeadSelfAttention(nn.Module):
             Q = self.rope(Q, positions)
             K = self.rope(K, positions)
 
-        # Lower-triangular causal mask: position i attends to positions 0..i
-        causal_mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device))
-
-        # Attend: (batch, num_heads, seq, d_k)
-        out = scaled_dot_product_attention(Q, K, V, mask=causal_mask)
+        if self.use_flash:
+            # Flash Attention: O(N) memory, fused kernel — requires float16/bfloat16
+            # Cast to half precision for the Triton kernel, then cast output back
+            orig_dtype = Q.dtype
+            Q_h = Q.to(torch.bfloat16)
+            K_h = K.to(torch.bfloat16)
+            V_h = V.to(torch.bfloat16)
+            out = flash_attention(Q_h, K_h, V_h, causal=True).to(orig_dtype)
+        else:
+            # Naive attention: materialises the full (seq, seq) score matrix in HBM
+            causal_mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device))
+            out = scaled_dot_product_attention(Q, K, V, mask=causal_mask)
 
         # Merge heads back: (batch, seq, d_model)
         out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)

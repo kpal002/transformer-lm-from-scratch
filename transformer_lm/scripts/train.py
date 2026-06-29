@@ -54,6 +54,8 @@ def parse_args() -> argparse.Namespace:
                    help="Normalization placement: pre-norm (default), post-norm, or none")
     g.add_argument("--no-rope",        dest="use_rope", action="store_false",
                    help="Replace RoPE with learned positional embeddings")
+    g.add_argument("--flash-attention", dest="flash_attention", action="store_true",
+                   help="Use Flash Attention Triton kernel (requires CUDA + triton)")
 
     # ── Training ───────────────────────────────────────────────────────────────
     g = p.add_argument_group("training")
@@ -137,6 +139,7 @@ def main() -> None:
         theta=args.theta,
         norm_type=args.norm_type,
         use_rope=args.use_rope,
+        use_flash_attn=args.flash_attention,
         alpha_max=args.alpha_max,
         alpha_min=args.alpha_min,
         weight_decay=args.weight_decay,
@@ -165,6 +168,7 @@ def main() -> None:
         theta=cfg.theta,
         norm_type=cfg.norm_type,
         use_rope=cfg.use_rope,
+        use_flash=cfg.use_flash_attn,
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())

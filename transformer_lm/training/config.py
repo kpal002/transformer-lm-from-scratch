@@ -56,6 +56,11 @@ class TrainingConfig:
     """Whether to use Rotary Positional Embedding.  When False, a learned
     positional embedding table is added at the input layer instead."""
 
+    use_flash_attn: bool = False
+    """Use Flash Attention Triton kernel instead of naive scaled dot-product
+    attention.  Requires CUDA + Triton (`pip install triton`).  Provides
+    O(N) memory and 2–4× wall-clock speedup at seq_len ≥ 1024."""
+
     ffn_type: str = "swiglu"
     """FFN variant: "swiglu" (default, LLaMA-style) or "silu" (ablation)."""
 

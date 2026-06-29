@@ -59,10 +59,11 @@ def _meta(cfg: TrainingConfig) -> dict:
     checkpoint without requiring the user to re-specify hyperparameters.
     """
     return {
-        "context_length": cfg.context_length,
-        "num_heads":      cfg.num_heads,
-        "norm_type":      cfg.norm_type,
-        "use_rope":       cfg.use_rope,
+        "context_length":  cfg.context_length,
+        "num_heads":       cfg.num_heads,
+        "norm_type":       cfg.norm_type,
+        "use_rope":        cfg.use_rope,
+        "use_flash_attn":  cfg.use_flash_attn,
     }
 
 

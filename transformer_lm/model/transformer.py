@@ -58,6 +58,7 @@ class TransformerBlock(nn.Module):
         theta: float = 10000.0,
         norm_type: str = "pre",
         use_rope: bool = True,
+        use_flash: bool = False,
         device=None,
         dtype=None,
     ):
@@ -71,6 +72,7 @@ class TransformerBlock(nn.Module):
             norm_type:   "pre" | "post" | "none"  — where normalisation sits.
             use_rope:    If False, attention has no positional encoding;
                          position is handled by a learned table in TransformerLM.
+            use_flash:   Use Flash Attention Triton kernel (requires CUDA + Triton).
         """
         super().__init__()
         self.norm_type = norm_type
@@ -81,7 +83,7 @@ class TransformerBlock(nn.Module):
             self.norm2 = RMSNorm(d_model, device=device, dtype=dtype)
 
         self.attn = CausalMultiHeadSelfAttention(
-            d_model, num_heads, max_seq_len, theta, use_rope, device, dtype
+            d_model, num_heads, max_seq_len, theta, use_rope, use_flash, device, dtype
         )
         self.ffn = SwiGLUFFN(d_model=d_model, d_ff=d_ff, device=device, dtype=dtype)
 
@@ -144,6 +146,7 @@ class TransformerLM(nn.Module):
         theta: float = 10000.0,
         norm_type: str = "pre",
         use_rope: bool = True,
+        use_flash: bool = False,
         device=None,
         dtype=None,
     ):
@@ -177,10 +180,11 @@ class TransformerLM(nn.Module):
             self.pos_embedding = Embedding(context_length, d_model, device=device, dtype=dtype)
 
         # Stack of transformer blocks
+        self.use_flash = use_flash
         self.blocks = nn.ModuleList([
             TransformerBlock(
                 d_model, num_heads, d_ff, context_length,
-                theta, norm_type, use_rope, device, dtype
+                theta, norm_type, use_rope, use_flash, device, dtype
             )
             for _ in range(num_layers)
         ])
