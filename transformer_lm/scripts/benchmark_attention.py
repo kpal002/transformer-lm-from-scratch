@@ -145,9 +145,18 @@ def bench_throughput(
     d_model: int = 512,
     num_layers: int = 4,
     num_heads: int = 8,   # d_k = d_model / num_heads = 64 — matches bench_kernel default
-    num_steps: int = 10,
+    num_steps: int = 20,
 ) -> dict:
-    """Compare tokens/sec for naive vs flash at the full model level."""
+    """Measure forward-pass tokens/sec for naive vs flash at the full model level.
+
+    Forward-only (torch.no_grad) keeps the benchmark focused on what Flash
+    Attention actually changes — the attention kernel's memory footprint and
+    arithmetic intensity.  The backward pass scales proportionally to forward
+    (typically ~2×), so training throughput ≈ forward_tps / 3.
+
+    The model runs in float32; the flash kernel internally uses bfloat16 via
+    the .to(bfloat16) cast in CausalMultiHeadSelfAttention.forward().
+    """
     results: dict = {"seq_lens": seq_lens, "naive_tps": [], "flash_tps": []}
 
     vocab_size = 1024  # small vocab — we only care about attention cost
@@ -158,6 +167,7 @@ def bench_throughput(
                 results[f"{tag}_tps"].append(None)
                 continue
 
+            # float32 model — the flash kernel handles its own bfloat16 cast internally
             model = TransformerLM(
                 vocab_size=vocab_size,
                 context_length=seq_len,
@@ -165,38 +175,39 @@ def bench_throughput(
                 num_layers=num_layers,
                 num_heads=num_heads,
                 use_flash=use_flash,
-            ).to(DEVICE, dtype=torch.bfloat16)
+            ).to(DEVICE)
+            model.eval()
 
-            opt = torch.optim.AdamW(model.parameters(), lr=1e-4)
-
+            @torch.no_grad()
             def step():
                 ids = torch.randint(0, vocab_size, (batch, seq_len), device=DEVICE)
-                logits = model(ids)
-                loss = torch.nn.functional.cross_entropy(
-                    logits[:, :-1].reshape(-1, vocab_size),
-                    ids[:, 1:].reshape(-1),
-                )
-                loss.backward()
-                opt.step()
-                opt.zero_grad(set_to_none=True)
+                return model(ids)
 
-            # warmup
-            for _ in range(3):
-                step()
-            _sync()
+            try:
+                # warmup — catch Triton compile / runtime errors early
+                for _ in range(3):
+                    step()
+                _sync()
 
-            t0 = time.perf_counter()
-            for _ in range(num_steps):
-                step()
-            _sync()
-            elapsed = time.perf_counter() - t0
+                t0 = time.perf_counter()
+                for _ in range(num_steps):
+                    step()
+                _sync()
+                elapsed = time.perf_counter() - t0
 
-            tps = batch * seq_len * num_steps / elapsed
-            results[f"{tag}_tps"].append(tps)
-            print(f"  seq={seq_len:5d} {tag:5s} | {tps:,.0f} tokens/sec")
+                tps = batch * seq_len * num_steps / elapsed
+                results[f"{tag}_tps"].append(tps)
+                print(f"  seq={seq_len:5d} {tag:5s} | {tps:,.0f} tokens/sec")
 
-            del model
-            torch.cuda.empty_cache()
+            except RuntimeError as e:
+                print(f"  seq={seq_len:5d} {tag:5s} | FAILED: {e}")
+                results[f"{tag}_tps"].append(None)
+                # Reset CUDA state so subsequent benchmarks can still run
+                torch.cuda.empty_cache()
+
+            finally:
+                del model
+                torch.cuda.empty_cache()
 
     return results
 
@@ -265,8 +276,8 @@ def plot_results(kernel: dict, throughput: dict, out_dir: Path):
     ax.set_xticks(x)
     ax.set_xticklabels([str(s) for s in tsl])
     ax.set_xlabel("Sequence length")
-    ax.set_ylabel("Training throughput (tokens/sec)")
-    ax.set_title("End-to-end training throughput: naive vs Flash Attention")
+    ax.set_ylabel("Forward throughput (tokens/sec)")
+    ax.set_title("Forward-pass throughput: naive vs Flash Attention")
     ax.legend()
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()

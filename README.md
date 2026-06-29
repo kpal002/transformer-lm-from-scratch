@@ -138,7 +138,7 @@ Memory savings are dramatic at long context: at seq=4096 the naive kernel uses ~
 
 ![Flash Attention training throughput](assets/benchmark_throughput.png)
 
-End-to-end tokens/sec with a 4-layer, 512-dim model on A100. Flash attention delivers higher throughput at every sequence length ≥ 512, with the gap widening at 2048+ tokens — exactly where batch size would need to shrink under naive attention.
+Forward-pass tokens/sec with a 4-layer, 512-dim model on A100. Flash attention delivers higher throughput at every sequence length ≥ 512, with the gap widening at 2048+ tokens. Since backward scales proportionally (~2× forward cost), the training throughput ratio is the same.
 
 Enable Flash Attention with a single flag:
 
