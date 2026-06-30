@@ -292,8 +292,11 @@ if _TRITON_AVAILABLE:
         dk = tl.zeros([BLOCK_N, BLOCK_DMODEL], dtype=tl.float32)
         dv = tl.zeros([BLOCK_N, BLOCK_DMODEL], dtype=tl.float32)
 
-        # For causal: only Q positions ≥ last position in this K/V tile attend to it
-        lo = start_n * BLOCK_N if IS_CAUSAL else 0
+        # For causal: only Q positions ≥ last position in this K/V tile attend to it.
+        # Align lo DOWN to the nearest BLOCK_M boundary: if lo is not BLOCK_M-aligned,
+        # the first Q-tile's offs_m would run start_n*BLOCK_N .. start_n*BLOCK_N+BLOCK_M-1,
+        # which overflows N_CTX when BLOCK_N < BLOCK_M (64 < 128 in the default config).
+        lo = (start_n * BLOCK_N // BLOCK_M) * BLOCK_M if IS_CAUSAL else 0
 
         for start_m in range(lo, N_CTX, BLOCK_M):
             offs_m = start_m + tl.arange(0, BLOCK_M)
