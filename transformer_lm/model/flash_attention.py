@@ -146,12 +146,17 @@ if _TRITON_AVAILABLE:
             # Attention scores: (BLOCK_M, BLOCK_N)
             qk = tl.dot(q, k) * sm_scale
 
-            # Causal mask: set future positions to -inf before softmax
+            # Causal mask: set future positions to a large negative before softmax.
+            # We use -1e6 instead of -inf to avoid NaN from exp(-inf - (-inf))
+            # when an entire tile row is masked: m_ij would be -inf, and
+            # exp(qk - m_ij) = exp(-inf - (-inf)) = exp(NaN) = NaN.
+            # With -1e6: m_ij = -1e6, exp(0) = 1 but beta = exp(-1e6 - m_valid) ≈ 0,
+            # so the contribution is numerically zero without NaN.
             if IS_CAUSAL:
                 offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)  # query positions
                 offs_n = start_n          + tl.arange(0, BLOCK_N)   # key positions
                 # Allow attending only to positions j ≤ i
-                qk = tl.where(offs_m[:, None] >= offs_n[None, :], qk, float('-inf'))
+                qk = tl.where(offs_m[:, None] >= offs_n[None, :], qk, -1e6)
 
             # Online softmax update for this tile:
             m_ij = tl.max(qk, axis=1)              # (BLOCK_M,) tile row-max
