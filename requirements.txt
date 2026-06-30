@@ -1,4 +1,17 @@
+# Core — required for all training and generation
 torch>=2.0
-regex>=2023.0
-tqdm>=4.0
+numpy>=1.24
+regex>=2023.0      # BPE tokenizer (faster than stdlib re for Unicode)
+tqdm>=4.0          # progress bars in tokenizer trainer
+
+# Data — only needed when downloading TinyStories (skip with --train-tokens / --val-tokens)
 datasets>=2.0
+
+# Optional — W&B experiment tracking (enable with --wandb flag)
+# wandb
+
+# Optional — Flash Attention Triton kernel (enable with --flash-attention flag)
+# triton
+
+# Optional — benchmark plots (benchmark_attention.py)
+# matplotlib
