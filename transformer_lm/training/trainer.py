@@ -8,6 +8,7 @@ generate() — autoregressive sampling from a trained model with temperature
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import time
@@ -100,6 +101,9 @@ def train(
     os.makedirs(cfg.out_dir, exist_ok=True)
     model.train()
 
+    metrics_path = os.path.join(cfg.out_dir, "metrics.jsonl")
+    metrics_file = open(metrics_path, "a")
+
     # Initialise W&B run if requested
     run = None
     if cfg.use_wandb:
@@ -158,6 +162,11 @@ def train(
                 f"step {step:5d} | loss {train_loss:.4f} | ppl {math.exp(train_loss):7.2f} "
                 f"| lr {lr:.2e} | grad {grad_norm:.3f} | {elapsed/60:.1f} min"
             )
+            record: dict = {
+                "step": step, "train_loss": train_loss,
+                "train_ppl": math.exp(train_loss), "lr": lr,
+                "grad_norm": grad_norm, "wall_clock_sec": elapsed,
+            }
             if run is not None:
                 import wandb
                 wandb.log(
@@ -175,12 +184,18 @@ def train(
         if step % cfg.val_every == 0 and step > 0:
             vl = estimate_val_loss(model, val_data, cfg, device)
             print(f"  [val] loss {vl:.4f} | ppl {math.exp(vl):.2f}")
+            record["val_loss"] = vl
+            record["val_ppl"]  = math.exp(vl)
             if run is not None:
                 import wandb
                 wandb.log(
                     {"val/loss": vl, "val/ppl": math.exp(vl), "wall_clock_sec": elapsed},
                     step=step,
                 )
+
+        if step % cfg.log_every == 0:
+            metrics_file.write(json.dumps(record) + "\n")
+            metrics_file.flush()
 
         # ── Periodic checkpoint ───────────────────────────────────────────────
         if step % cfg.save_every == 0 and step > 0:
@@ -194,6 +209,7 @@ def train(
         os.path.join(cfg.out_dir, "ckpt_final.pt"),
         _meta(cfg),
     )
+    metrics_file.close()
     print("Training complete.")
 
     if run is not None:
