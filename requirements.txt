@@ -8,7 +8,7 @@ tqdm>=4.0          # progress bars in tokenizer trainer
 datasets>=2.0
 
 # Optional — W&B experiment tracking (enable with --wandb flag)
-# wandb
+wandb
 
 # Optional — Flash Attention Triton kernel (enable with --flash-attention flag)
 # triton
