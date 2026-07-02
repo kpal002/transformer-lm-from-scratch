@@ -61,6 +61,11 @@ class TrainingConfig:
     attention.  Requires CUDA + Triton (`pip install triton`).  Provides
     O(N) memory and 2–4× wall-clock speedup at seq_len ≥ 1024."""
 
+    use_linear_attn: bool = False
+    """Use causal linear attention (Katharopoulos et al. 2020) instead of
+    softmax attention.  O(N·d²) time, O(N·d) memory — no quadratic cost.
+    Trains faster at long context but may converge to higher loss than softmax."""
+
     ffn_type: str = "swiglu"
     """FFN variant: "swiglu" (default, LLaMA-style) or "silu" (ablation)."""
 

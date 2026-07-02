@@ -11,6 +11,7 @@ from typing import Optional
 
 from transformer_lm.model.layers import Linear
 from transformer_lm.model.flash_attention import flash_attention, flash_attention_available
+from transformer_lm.model.linear_attention import causal_linear_attention
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +212,7 @@ class CausalMultiHeadSelfAttention(nn.Module):
         theta: float = 10000.0,
         use_rope: bool = True,
         use_flash: bool = False,
+        use_linear: bool = False,
         device=None,
         dtype=None,
     ):
@@ -226,6 +228,8 @@ class CausalMultiHeadSelfAttention(nn.Module):
                          at the TransformerLM level instead).
             use_flash:   Use Flash Attention Triton kernel instead of naive SDPA.
                          Requires CUDA + Triton.  Falls back to naive if unavailable.
+            use_linear:  Use causal linear attention (Katharopoulos 2020) instead of
+                         softmax attention.  O(N·d²) time, O(N·d) memory.
         """
         super().__init__()
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
@@ -233,8 +237,9 @@ class CausalMultiHeadSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.d_k = d_model // num_heads  # per-head dimension
         self.use_rope = use_rope
+        self.use_linear = use_linear
         # Use flash attention only if explicitly requested and hardware supports it
-        self.use_flash = use_flash and flash_attention_available()
+        self.use_flash = (not use_linear) and use_flash and flash_attention_available()
 
         # Packed QKV projections and output projection — all bias-free
         self.W_Q = Linear(d_model, d_model, device=device, dtype=dtype)
@@ -272,7 +277,10 @@ class CausalMultiHeadSelfAttention(nn.Module):
             Q = self.rope(Q, positions)
             K = self.rope(K, positions)
 
-        if self.use_flash:
+        if self.use_linear:
+            # Linear attention: O(N·d²) via cumulative outer-product sums
+            out = causal_linear_attention(Q, K, V)
+        elif self.use_flash:
             # Flash Attention: O(N) memory, fused kernel — requires float16/bfloat16
             # Must be contiguous: split_heads() uses transpose() which produces a
             # non-contiguous view; our Triton kernel assumes contiguous strides.

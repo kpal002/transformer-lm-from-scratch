@@ -76,6 +76,8 @@ def parse_args() -> argparse.Namespace:
                    help="Replace RoPE with learned positional embeddings")
     g.add_argument("--flash-attention", dest="flash_attention", action="store_true",
                    help="Use Flash Attention Triton kernel (requires CUDA + triton)")
+    g.add_argument("--linear-attention", dest="linear_attention", action="store_true",
+                   help="Use causal linear attention (Katharopoulos 2020): O(N·d²) time, O(N·d) memory")
 
     # ── Training ───────────────────────────────────────────────────────────────
     g = p.add_argument_group("training")
@@ -183,6 +185,7 @@ def main() -> None:
         norm_type=args.norm_type,
         use_rope=args.use_rope,
         use_flash_attn=args.flash_attention,
+        use_linear_attn=args.linear_attention,
         alpha_max=args.alpha_max,
         alpha_min=args.alpha_min,
         weight_decay=args.weight_decay,
@@ -212,6 +215,7 @@ def main() -> None:
         norm_type=cfg.norm_type,
         use_rope=cfg.use_rope,
         use_flash=cfg.use_flash_attn,
+        use_linear=cfg.use_linear_attn,
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
