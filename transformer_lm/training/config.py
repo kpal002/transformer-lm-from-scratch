@@ -61,6 +61,12 @@ class TrainingConfig:
     attention.  Requires CUDA + Triton (`pip install triton`).  Provides
     O(N) memory and 2–4× wall-clock speedup at seq_len ≥ 1024."""
 
+    use_gdn_attn: bool = False
+    """Use Gated Delta Net (Yang et al. 2024): linear recurrence with a
+    per-token erase gate β_t and global decay gate γ_t.  Solves the key
+    interference problem of plain linear attention via erase-then-write.
+    Takes priority over use_flash_attn."""
+
     ffn_type: str = "swiglu"
     """FFN variant: "swiglu" (default, LLaMA-style) or "silu" (ablation)."""
 

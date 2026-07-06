@@ -76,6 +76,8 @@ def parse_args() -> argparse.Namespace:
                    help="Replace RoPE with learned positional embeddings")
     g.add_argument("--flash-attention", dest="flash_attention", action="store_true",
                    help="Use Flash Attention Triton kernel (requires CUDA + triton)")
+    g.add_argument("--gdn-attention", dest="gdn_attention", action="store_true",
+                   help="Use Gated Delta Net: erase-then-write recurrence with decay + erase gates (Yang et al. 2024)")
 
     # ── Training ───────────────────────────────────────────────────────────────
     g = p.add_argument_group("training")
@@ -183,6 +185,7 @@ def main() -> None:
         norm_type=args.norm_type,
         use_rope=args.use_rope,
         use_flash_attn=args.flash_attention,
+        use_gdn_attn=args.gdn_attention,
         alpha_max=args.alpha_max,
         alpha_min=args.alpha_min,
         weight_decay=args.weight_decay,
@@ -212,6 +215,7 @@ def main() -> None:
         norm_type=cfg.norm_type,
         use_rope=cfg.use_rope,
         use_flash=cfg.use_flash_attn,
+        use_gdn=cfg.use_gdn_attn,
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())

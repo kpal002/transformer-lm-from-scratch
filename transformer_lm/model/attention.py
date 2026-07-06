@@ -11,6 +11,7 @@ from typing import Optional
 
 from transformer_lm.model.layers import Linear
 from transformer_lm.model.flash_attention import flash_attention, flash_attention_available
+from transformer_lm.model.gated_delta_net import causal_gated_delta_net
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +212,7 @@ class CausalMultiHeadSelfAttention(nn.Module):
         theta: float = 10000.0,
         use_rope: bool = True,
         use_flash: bool = False,
+        use_gdn: bool = False,
         device=None,
         dtype=None,
     ):
@@ -226,6 +228,9 @@ class CausalMultiHeadSelfAttention(nn.Module):
                          at the TransformerLM level instead).
             use_flash:   Use Flash Attention Triton kernel instead of naive SDPA.
                          Requires CUDA + Triton.  Falls back to naive if unavailable.
+            use_gdn:     Use Gated Delta Net (Yang et al. 2024): linear recurrence
+                         with per-token erase gate β_t and decay gate γ_t.
+                         Takes priority over use_flash.
         """
         super().__init__()
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
@@ -233,14 +238,24 @@ class CausalMultiHeadSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.d_k = d_model // num_heads  # per-head dimension
         self.use_rope = use_rope
-        # Use flash attention only if explicitly requested and hardware supports it
-        self.use_flash = use_flash and flash_attention_available()
+        self.use_gdn = use_gdn
+        self.use_flash = (not use_gdn) and use_flash and flash_attention_available()
 
         # Packed QKV projections and output projection — all bias-free
         self.W_Q = Linear(d_model, d_model, device=device, dtype=dtype)
         self.W_K = Linear(d_model, d_model, device=device, dtype=dtype)
         self.W_V = Linear(d_model, d_model, device=device, dtype=dtype)
         self.W_O = Linear(d_model, d_model, device=device, dtype=dtype)
+
+        # GDN: per-head scalar gates from input tokens
+        #   γ_t = sigmoid(W_γ x_t) — decay gate, init bias +1.0 → sigmoid≈0.73
+        #   β_t = sigmoid(W_β x_t) — erase gate, init bias -2.0 → sigmoid≈0.12
+        #     (mostly additive at init; the model learns when to erase)
+        if use_gdn:
+            self.gate_proj = nn.Linear(d_model, num_heads, bias=True, device=device, dtype=dtype)
+            self.beta_proj  = nn.Linear(d_model, num_heads, bias=True, device=device, dtype=dtype)
+            nn.init.constant_(self.gate_proj.bias, 1.0)
+            nn.init.constant_(self.beta_proj.bias, -2.0)
 
         # Only instantiate RoPE buffers when needed
         if use_rope:
@@ -272,7 +287,12 @@ class CausalMultiHeadSelfAttention(nn.Module):
             Q = self.rope(Q, positions)
             K = self.rope(K, positions)
 
-        if self.use_flash:
+        if self.use_gdn:
+            # Gated Delta Net: erase-then-write recurrence with decay + erase gates
+            gamma = torch.sigmoid(self.gate_proj(x)).transpose(1, 2)   # (B, H, N)
+            beta  = torch.sigmoid(self.beta_proj(x)).transpose(1, 2)   # (B, H, N)
+            out = causal_gated_delta_net(Q, K, V, gamma, beta)
+        elif self.use_flash:
             # Flash Attention: O(N) memory, fused kernel — requires float16/bfloat16
             # Must be contiguous: split_heads() uses transpose() which produces a
             # non-contiguous view; our Triton kernel assumes contiguous strides.
