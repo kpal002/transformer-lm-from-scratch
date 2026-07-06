@@ -420,8 +420,8 @@ def parse_args():
     p.add_argument("--d-k", type=int, default=64, help="Per-head dimension")
     p.add_argument(
         "--seq-lens", type=int, nargs="+",
-        default=[128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768],
-        help="Sequence lengths to sweep (default: 128 … 32768)",
+        default=[128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072],
+        help="Sequence lengths to sweep (default: 128 … 131072)",
     )
     p.add_argument(
         "--throughput-seq-lens", type=int, nargs="+",
