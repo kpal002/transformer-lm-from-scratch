@@ -66,6 +66,11 @@ class TrainingConfig:
     softmax attention.  O(N·d²) time, O(N·d) memory — no quadratic cost.
     Trains faster at long context but may converge to higher loss than softmax."""
 
+    use_mamba2_attn: bool = False
+    """Use Mamba-2 linear attention (Dao and Gu, 2024): linear recurrence with
+    a per-token, per-head scalar decay gate γ_t = sigmoid(W_γ x_t).  Takes
+    priority over use_linear_attn and use_flash_attn."""
+
     ffn_type: str = "swiglu"
     """FFN variant: "swiglu" (default, LLaMA-style) or "silu" (ablation)."""
 

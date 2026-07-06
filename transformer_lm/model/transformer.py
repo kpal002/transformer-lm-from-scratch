@@ -60,6 +60,7 @@ class TransformerBlock(nn.Module):
         use_rope: bool = True,
         use_flash: bool = False,
         use_linear: bool = False,
+        use_mamba2: bool = False,
         device=None,
         dtype=None,
     ):
@@ -75,6 +76,7 @@ class TransformerBlock(nn.Module):
                          position is handled by a learned table in TransformerLM.
             use_flash:   Use Flash Attention Triton kernel (requires CUDA + Triton).
             use_linear:  Use causal linear attention (Katharopoulos 2020).
+            use_mamba2:  Use Mamba-2 linear attention with scalar decay gate.
         """
         super().__init__()
         self.norm_type = norm_type
@@ -85,7 +87,7 @@ class TransformerBlock(nn.Module):
             self.norm2 = RMSNorm(d_model, device=device, dtype=dtype)
 
         self.attn = CausalMultiHeadSelfAttention(
-            d_model, num_heads, max_seq_len, theta, use_rope, use_flash, use_linear, device, dtype
+            d_model, num_heads, max_seq_len, theta, use_rope, use_flash, use_linear, use_mamba2, device, dtype
         )
         self.ffn = SwiGLUFFN(d_model=d_model, d_ff=d_ff, device=device, dtype=dtype)
 
@@ -150,6 +152,7 @@ class TransformerLM(nn.Module):
         use_rope: bool = True,
         use_flash: bool = False,
         use_linear: bool = False,
+        use_mamba2: bool = False,
         device=None,
         dtype=None,
     ):
@@ -169,6 +172,7 @@ class TransformerLM(nn.Module):
             use_rope:        If False, learned positional embeddings are used
                              instead of RoPE.
             use_linear:      Use causal linear attention (Katharopoulos 2020).
+            use_mamba2:      Use Mamba-2 linear attention with scalar decay gate.
         """
         super().__init__()
         if d_ff is None:
@@ -188,7 +192,7 @@ class TransformerLM(nn.Module):
         self.blocks = nn.ModuleList([
             TransformerBlock(
                 d_model, num_heads, d_ff, context_length,
-                theta, norm_type, use_rope, use_flash, use_linear, device, dtype
+                theta, norm_type, use_rope, use_flash, use_linear, use_mamba2, device, dtype
             )
             for _ in range(num_layers)
         ])

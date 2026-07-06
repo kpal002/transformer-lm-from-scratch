@@ -12,6 +12,7 @@ from typing import Optional
 from transformer_lm.model.layers import Linear
 from transformer_lm.model.flash_attention import flash_attention, flash_attention_available
 from transformer_lm.model.linear_attention import causal_linear_attention
+from transformer_lm.model.mamba2_attention import causal_mamba2_attention
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +214,7 @@ class CausalMultiHeadSelfAttention(nn.Module):
         use_rope: bool = True,
         use_flash: bool = False,
         use_linear: bool = False,
+        use_mamba2: bool = False,
         device=None,
         dtype=None,
     ):
@@ -230,6 +232,9 @@ class CausalMultiHeadSelfAttention(nn.Module):
                          Requires CUDA + Triton.  Falls back to naive if unavailable.
             use_linear:  Use causal linear attention (Katharopoulos 2020) instead of
                          softmax attention.  O(N·d²) time, O(N·d) memory.
+            use_mamba2:  Use Mamba-2 linear attention with per-token scalar decay gate
+                         γ_t = sigmoid(W_γ x_t).  Adds num_heads gate parameters per
+                         layer.  Takes priority over use_linear and use_flash.
         """
         super().__init__()
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
@@ -237,15 +242,23 @@ class CausalMultiHeadSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.d_k = d_model // num_heads  # per-head dimension
         self.use_rope = use_rope
-        self.use_linear = use_linear
+        self.use_mamba2 = use_mamba2
+        self.use_linear = (not use_mamba2) and use_linear
         # Use flash attention only if explicitly requested and hardware supports it
-        self.use_flash = (not use_linear) and use_flash and flash_attention_available()
+        self.use_flash = (not use_mamba2) and (not use_linear) and use_flash and flash_attention_available()
 
         # Packed QKV projections and output projection — all bias-free
         self.W_Q = Linear(d_model, d_model, device=device, dtype=dtype)
         self.W_K = Linear(d_model, d_model, device=device, dtype=dtype)
         self.W_V = Linear(d_model, d_model, device=device, dtype=dtype)
         self.W_O = Linear(d_model, d_model, device=device, dtype=dtype)
+
+        # Mamba-2: per-head scalar decay gate γ_t = sigmoid(W_γ x_t)
+        # Bias initialised positive so the gate starts near sigmoid(1)≈0.73
+        # (moderately retentive) rather than sigmoid(0)=0.5.
+        if use_mamba2:
+            self.gate_proj = nn.Linear(d_model, num_heads, bias=True, device=device, dtype=dtype)
+            nn.init.constant_(self.gate_proj.bias, 1.0)
 
         # Only instantiate RoPE buffers when needed
         if use_rope:
@@ -277,7 +290,12 @@ class CausalMultiHeadSelfAttention(nn.Module):
             Q = self.rope(Q, positions)
             K = self.rope(K, positions)
 
-        if self.use_linear:
+        if self.use_mamba2:
+            # Mamba-2: linear attention + per-token scalar decay gate
+            gamma = torch.sigmoid(self.gate_proj(x))   # (B, N, H)
+            gamma = gamma.transpose(1, 2)              # (B, H, N)
+            out = causal_mamba2_attention(Q, K, V, gamma)
+        elif self.use_linear:
             # Linear attention: O(N·d²) via cumulative outer-product sums
             out = causal_linear_attention(Q, K, V)
         elif self.use_flash:

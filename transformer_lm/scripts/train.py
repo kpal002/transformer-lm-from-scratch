@@ -78,6 +78,8 @@ def parse_args() -> argparse.Namespace:
                    help="Use Flash Attention Triton kernel (requires CUDA + triton)")
     g.add_argument("--linear-attention", dest="linear_attention", action="store_true",
                    help="Use causal linear attention (Katharopoulos 2020): O(N·d²) time, O(N·d) memory")
+    g.add_argument("--mamba2-attention", dest="mamba2_attention", action="store_true",
+                   help="Use Mamba-2 linear attention with scalar decay gate (Dao & Gu 2024)")
 
     # ── Training ───────────────────────────────────────────────────────────────
     g = p.add_argument_group("training")
@@ -186,6 +188,7 @@ def main() -> None:
         use_rope=args.use_rope,
         use_flash_attn=args.flash_attention,
         use_linear_attn=args.linear_attention,
+        use_mamba2_attn=args.mamba2_attention,
         alpha_max=args.alpha_max,
         alpha_min=args.alpha_min,
         weight_decay=args.weight_decay,
@@ -216,6 +219,7 @@ def main() -> None:
         use_rope=cfg.use_rope,
         use_flash=cfg.use_flash_attn,
         use_linear=cfg.use_linear_attn,
+        use_mamba2=cfg.use_mamba2_attn,
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
