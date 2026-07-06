@@ -1,7 +1,7 @@
-"""Benchmark Flash Attention vs naive scaled dot-product attention.
+"""Benchmark all attention variants: naive, flash, linear, GDN, Mamba-2.
 
 Measures three axes that matter for training:
-  1. Wall-clock time (ms) vs sequence length — at what seq_len does Flash win?
+  1. Wall-clock time (ms) vs sequence length — at what seq_len does each win?
   2. Peak GPU memory (MiB) vs sequence length — the O(N) vs O(N²) gap.
   3. Training throughput (tokens/sec) — end-to-end impact on a real model.
 
@@ -9,8 +9,15 @@ Run on a CUDA GPU:
 
     python -m transformer_lm.scripts.benchmark_attention
 
+Variants benchmarked:
+    naive   — O(N²) scaled dot-product attention (baseline)
+    flash   — Flash Attention Triton kernel (O(N) memory, same O(N²) compute)
+    linear  — Katharopoulos 2020 cumsum (O(N) compute + memory, no selectivity)
+    gdn     — Gated Delta Net (O(N), erase-then-write, Triton kernel)
+    mamba2  — Mamba-2 chunked scan (O(N), scalar decay gate)
+
 Outputs:
-    benchmark_time.png    — latency curves (log-log scale to see the crossover)
+    benchmark_time.png    — latency curves (log-log scale)
     benchmark_memory.png  — peak memory curves
     benchmark_throughput.png — tokens/sec bar chart
     benchmark_results.json — raw numbers for further analysis
@@ -37,6 +44,25 @@ from transformer_lm.model.attention import (
 )
 from transformer_lm.model.flash_attention import flash_attention, flash_attention_available
 from transformer_lm.model.transformer import TransformerLM
+
+# Linear variants — imported with fallbacks so the script runs on any branch
+try:
+    from transformer_lm.model.linear_attention import causal_linear_attention
+    _LINEAR_AVAILABLE = True
+except ImportError:
+    _LINEAR_AVAILABLE = False
+
+try:
+    from transformer_lm.model.gated_delta_net import causal_gated_delta_net
+    _GDN_AVAILABLE = True
+except ImportError:
+    _GDN_AVAILABLE = False
+
+try:
+    from transformer_lm.model.mamba2_attention import causal_mamba2_attention
+    _MAMBA2_AVAILABLE = True
+except ImportError:
+    _MAMBA2_AVAILABLE = False
 
 DEVICE = "cuda"
 
@@ -79,58 +105,126 @@ def timed(fn: Callable, warmup: int = 5, iters: int = 20) -> tuple[float, float]
 # Benchmark 1: attention kernel time and memory vs seq_len
 # ---------------------------------------------------------------------------
 
+def _measure_one(fn, warmup: int = 5, iters: int = 20) -> tuple[float, float]:
+    """Run fn(), return (mean_ms, peak_mib) after warmup. Clears cache first."""
+    torch.cuda.empty_cache()
+    for _ in range(warmup):
+        fn()
+    _sync()
+    _reset_peak()
+    ms, _ = timed(fn, warmup=0, iters=iters)
+    return ms, _peak_mib()
+
+
 def bench_kernel(
     seq_lens: list[int],
     batch: int = 2,
     num_heads: int = 16,
     d_k: int = 64,
 ) -> dict:
-    """Measure naive vs flash attention at the raw QKV level."""
-    results: dict = {"seq_lens": seq_lens, "naive_ms": [], "flash_ms": [],
-                     "naive_mib": [], "flash_mib": []}
+    """Measure all attention variants at the raw QKV kernel level."""
+    VARIANTS = ["naive", "flash", "linear", "gdn", "mamba2"]
+    results: dict = {"seq_lens": seq_lens}
+    for v in VARIANTS:
+        results[f"{v}_ms"]  = []
+        results[f"{v}_mib"] = []
+
+    # Column header
+    col = "  {:<8}  {:>5}"
+    header = f"\n  {'SEQ':>6}  " + "  ".join(
+        f"{'NAIVE':>12}  {'FLASH':>12}  {'LINEAR':>12}  {'GDN':>12}  {'MAMBA2':>12}".split("  ")
+    )
+    print(f"\n  {'SEQ LEN':>7}  "
+          f"{'NAIVE':>14}  {'FLASH':>14}  {'LINEAR':>14}  {'GDN':>14}  {'MAMBA2':>14}")
+    print(f"  {'':>7}  "
+          f"{'ms / MiB':>14}  {'ms / MiB':>14}  {'ms / MiB':>14}  {'ms / MiB':>14}  {'ms / MiB':>14}")
+    print("  " + "-" * 83)
 
     for seq_len in seq_lens:
         shape = (batch, num_heads, seq_len, d_k)
-        Q = torch.randn(shape, dtype=torch.bfloat16, device=DEVICE)
-        K = torch.randn(shape, dtype=torch.bfloat16, device=DEVICE)
-        V = torch.randn(shape, dtype=torch.bfloat16, device=DEVICE)
+        Q  = torch.randn(shape, dtype=torch.bfloat16, device=DEVICE)
+        K  = torch.randn(shape, dtype=torch.bfloat16, device=DEVICE)
+        V  = torch.randn(shape, dtype=torch.bfloat16, device=DEVICE)
         mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=DEVICE))
 
-        # ── Naive ─────────────────────────────────────────────────────────────
-        def naive():
-            return scaled_dot_product_attention(Q.float(), K.float(), V.float(), mask=mask)
+        # Gates for GDN / Mamba-2 — per-head scalars in (B, H, N)
+        gamma = torch.sigmoid(torch.randn(batch, num_heads, seq_len, device=DEVICE))
+        beta  = torch.sigmoid(torch.randn(batch, num_heads, seq_len, device=DEVICE))
 
-        _reset_peak()
-        ms, _ = timed(naive)
+        def _cell(ms, mib):
+            if ms is None:
+                return f"{'OOM':>14}"
+            return f"{ms:6.2f}ms {mib:6.0f}MiB"
+
+        row: dict[str, tuple] = {}
+
+        # ── Naive ──────────────────────────────────────────────────────────────
+        Qf, Kf, Vf = Q.float(), K.float(), V.float()
+        try:
+            ms, mib = _measure_one(
+                lambda: scaled_dot_product_attention(Qf, Kf, Vf, mask=mask))
+        except torch.cuda.OutOfMemoryError:
+            ms, mib = None, None
+        row["naive"] = (ms, mib)
         results["naive_ms"].append(ms)
-        results["naive_mib"].append(_peak_mib())
-
-        # Free the score matrix between runs
+        results["naive_mib"].append(mib)
         torch.cuda.empty_cache()
 
-        # ── Flash ─────────────────────────────────────────────────────────────
-        if not flash_attention_available():
-            print(f"  [seq={seq_len}] Triton not available — skipping Flash.")
-            results["flash_ms"].append(None)
-            results["flash_mib"].append(None)
-            continue
-
-        def flash():
-            return flash_attention(Q, K, V, causal=True)
-
-        _reset_peak()
-        ms, _ = timed(flash)
+        # ── Flash ──────────────────────────────────────────────────────────────
+        if flash_attention_available():
+            try:
+                ms, mib = _measure_one(lambda: flash_attention(Q, K, V, causal=True))
+            except torch.cuda.OutOfMemoryError:
+                ms, mib = None, None
+        else:
+            ms, mib = None, None
+        row["flash"] = (ms, mib)
         results["flash_ms"].append(ms)
-        results["flash_mib"].append(_peak_mib())
-
+        results["flash_mib"].append(mib)
         torch.cuda.empty_cache()
 
-        print(
-            f"  seq={seq_len:5d} | naive {results['naive_ms'][-1]:7.2f} ms  "
-            f"{results['naive_mib'][-1]:7.1f} MiB  |  "
-            f"flash {results['flash_ms'][-1]:7.2f} ms  "
-            f"{results['flash_mib'][-1]:7.1f} MiB"
-        )
+        # ── Naive linear (Katharopoulos 2020) ──────────────────────────────────
+        if _LINEAR_AVAILABLE:
+            try:
+                ms, mib = _measure_one(lambda: causal_linear_attention(Qf, Kf, Vf))
+            except torch.cuda.OutOfMemoryError:
+                ms, mib = None, None
+        else:
+            ms, mib = None, None
+        row["linear"] = (ms, mib)
+        results["linear_ms"].append(ms)
+        results["linear_mib"].append(mib)
+        torch.cuda.empty_cache()
+
+        # ── Gated Delta Net ────────────────────────────────────────────────────
+        if _GDN_AVAILABLE:
+            try:
+                ms, mib = _measure_one(
+                    lambda: causal_gated_delta_net(Qf, Kf, Vf, gamma, beta))
+            except torch.cuda.OutOfMemoryError:
+                ms, mib = None, None
+        else:
+            ms, mib = None, None
+        row["gdn"] = (ms, mib)
+        results["gdn_ms"].append(ms)
+        results["gdn_mib"].append(mib)
+        torch.cuda.empty_cache()
+
+        # ── Mamba-2 chunked scan ───────────────────────────────────────────────
+        if _MAMBA2_AVAILABLE:
+            try:
+                ms, mib = _measure_one(
+                    lambda: causal_mamba2_attention(Qf, Kf, Vf, gamma))
+            except torch.cuda.OutOfMemoryError:
+                ms, mib = None, None
+        else:
+            ms, mib = None, None
+        row["mamba2"] = (ms, mib)
+        results["mamba2_ms"].append(ms)
+        results["mamba2_mib"].append(mib)
+        torch.cuda.empty_cache()
+
+        print(f"  {seq_len:>7}  " + "  ".join(_cell(*row[v]) for v in VARIANTS))
 
     return results
 
@@ -216,6 +310,34 @@ def bench_throughput(
 # Plotting
 # ---------------------------------------------------------------------------
 
+_PALETTE = {
+    "naive":  "#e15759",
+    "flash":  "#4e79a7",
+    "linear": "#59a14f",
+    "gdn":    "#76b7b2",
+    "mamba2": "#f28e2b",
+}
+_MARKERS = {"naive": "o", "flash": "s", "linear": "^", "gdn": "D", "mamba2": "P"}
+_LABELS  = {
+    "naive":  "Naive O(N²)",
+    "flash":  "Flash (O(N) mem)",
+    "linear": "Linear (Katharopoulos)",
+    "gdn":    "Gated Delta Net",
+    "mamba2": "Mamba-2",
+}
+
+
+def _plot_line(ax, seq_lens, values, variant):
+    sl  = [seq_lens[i] for i, v in enumerate(values) if v is not None]
+    val = [v for v in values if v is not None]
+    if val:
+        ax.plot(sl, val,
+                _MARKERS[variant] + "-",
+                label=_LABELS[variant],
+                color=_PALETTE[variant],
+                linewidth=1.8, markersize=6)
+
+
 def plot_results(kernel: dict, throughput: dict, out_dir: Path):
     try:
         import matplotlib
@@ -226,37 +348,33 @@ def plot_results(kernel: dict, throughput: dict, out_dir: Path):
         return
 
     seq_lens = kernel["seq_lens"]
+    VARIANTS = ["naive", "flash", "linear", "gdn", "mamba2"]
 
-    # ── Time vs seq_len ───────────────────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(seq_lens, kernel["naive_ms"], "o-", label="Naive (O(N²))", color="#e15759")
-    flash_ms = [v for v in kernel["flash_ms"] if v is not None]
-    flash_sl = [seq_lens[i] for i, v in enumerate(kernel["flash_ms"]) if v is not None]
-    if flash_ms:
-        ax.plot(flash_sl, flash_ms, "s-", label="Flash Attention (O(N))", color="#4e79a7")
+    # ── Latency vs seq_len ────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for v in VARIANTS:
+        _plot_line(ax, seq_lens, kernel[f"{v}_ms"], v)
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
     ax.set_xlabel("Sequence length")
     ax.set_ylabel("Latency (ms)")
     ax.set_title("Attention kernel latency vs sequence length")
-    ax.legend()
+    ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(out_dir / "benchmark_time.png", dpi=150)
     plt.close(fig)
 
     # ── Memory vs seq_len ─────────────────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(seq_lens, kernel["naive_mib"], "o-", label="Naive (O(N²))", color="#e15759")
-    flash_mib = [v for v in kernel["flash_mib"] if v is not None]
-    if flash_mib:
-        ax.plot(flash_sl, flash_mib, "s-", label="Flash Attention (O(N))", color="#4e79a7")
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for v in VARIANTS:
+        _plot_line(ax, seq_lens, kernel[f"{v}_mib"], v)
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
     ax.set_xlabel("Sequence length")
     ax.set_ylabel("Peak GPU memory (MiB)")
     ax.set_title("Attention kernel peak memory vs sequence length")
-    ax.legend()
+    ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(out_dir / "benchmark_memory.png", dpi=150)
@@ -264,15 +382,17 @@ def plot_results(kernel: dict, throughput: dict, out_dir: Path):
 
     # ── Throughput bar chart ──────────────────────────────────────────────────
     tsl = throughput["seq_lens"]
-    naive_tps = throughput["naive_tps"]
-    flash_tps = throughput["flash_tps"]
-
-    x = list(range(len(tsl)))
-    width = 0.35
+    x   = list(range(len(tsl)))
+    n_bars = 2   # only naive + flash in throughput benchmark
+    width  = 0.35
     fig, ax = plt.subplots(figsize=(9, 5))
-    ax.bar([i - width / 2 for i in x], naive_tps, width, label="Naive", color="#e15759", alpha=0.85)
-    valid_flash = [v if v is not None else 0 for v in flash_tps]
-    ax.bar([i + width / 2 for i in x], valid_flash, width, label="Flash Attention", color="#4e79a7", alpha=0.85)
+    ax.bar([i - width / 2 for i in x],
+           throughput["naive_tps"], width,
+           label="Naive", color=_PALETTE["naive"], alpha=0.85)
+    valid_flash = [v if v is not None else 0 for v in throughput["flash_tps"]]
+    ax.bar([i + width / 2 for i in x],
+           valid_flash, width,
+           label="Flash Attention", color=_PALETTE["flash"], alpha=0.85)
     ax.set_xticks(x)
     ax.set_xticklabels([str(s) for s in tsl])
     ax.set_xlabel("Sequence length")
@@ -345,19 +465,32 @@ def main():
 
     plot_results(kernel, throughput, args.out_dir)
 
-    # Print summary table
+    # ── Summary: speedup and memory savings relative to naive ─────────────────
+    VARIANTS = ["flash", "linear", "gdn", "mamba2"]
     print()
-    print("Summary — kernel speedup (naive / flash latency):")
-    print(f"{'seq_len':>8}  {'naive_ms':>10}  {'flash_ms':>10}  {'speedup':>8}  {'mem_ratio':>10}")
+    print("Speedup vs naive (naive_ms / variant_ms):")
+    hdr = f"  {'SEQ LEN':>7}  " + "  ".join(f"{v.upper():>8}" for v in VARIANTS)
+    print(hdr)
+    print("  " + "-" * (9 + 11 * len(VARIANTS)))
     for i, sl in enumerate(kernel["seq_lens"]):
         nm = kernel["naive_ms"][i]
-        fm = kernel["flash_ms"][i]
-        if fm is not None:
-            speedup = nm / fm
-            mem_ratio = kernel["naive_mib"][i] / kernel["flash_mib"][i]
-            print(f"{sl:>8}  {nm:>10.2f}  {fm:>10.2f}  {speedup:>8.2f}x  {mem_ratio:>10.2f}x")
-        else:
-            print(f"{sl:>8}  {nm:>10.2f}  {'N/A':>10}  {'N/A':>8}  {'N/A':>10}")
+        cells = []
+        for v in VARIANTS:
+            vm = kernel[f"{v}_ms"][i]
+            cells.append(f"{nm/vm:>7.1f}x" if (vm and nm) else f"{'N/A':>8}")
+        print(f"  {sl:>7}  " + "  ".join(cells))
+
+    print()
+    print("Memory savings vs naive (naive_mib / variant_mib):")
+    print(hdr)
+    print("  " + "-" * (9 + 11 * len(VARIANTS)))
+    for i, sl in enumerate(kernel["seq_lens"]):
+        nm = kernel["naive_mib"][i]
+        cells = []
+        for v in VARIANTS:
+            vm = kernel[f"{v}_mib"][i]
+            cells.append(f"{nm/vm:>7.1f}x" if (vm and nm) else f"{'N/A':>8}")
+        print(f"  {sl:>7}  " + "  ".join(cells))
 
 
 if __name__ == "__main__":
